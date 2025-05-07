@@ -1,0 +1,88 @@
+
+create procedure dbo.zSTRL_HR_ACAMonthlyHoursByYear
+
+-- =============================================
+-- Author: Dreyson Smith
+-- Create date: 3/13/2025
+-- Description: Tracking ACA related hours for a company's employees within a specified year, divided down by showing their total hours in each month
+
+-- Update Editor Name, Description, and Date:
+
+-- =============================================
+
+@HRCo int,
+@Year int   
+as
+begin
+set nocount on;
+set transaction isolation level read uncommitted;
+
+-- =============================================
+-- Common Table Expression (CTE) to aggregate total hours per employee per month
+-- =============================================
+
+with CTEEmployeePayroll as 
+(
+select 
+	th.PRCo,                     
+	th.Employee,                 
+	year(th.PREndDate) as PayrollYear,   
+	month(th.PREndDate) as PayrollMonth, 
+	sum(th.Hours) as TotalHours  -- Total hours worked in that month
+from PayrollTableHeader
+	join PayrollEarnCode ec on ec.PRCo = th.PRCo and ec.EarnCode = th.EarnCode
+where th.PRCo = @HRCo 
+	and year(th.PREndDate) = @Year 
+	and ec.ACATrackHrsYN = 'Y'  -- Ensure hours are ACA-related
+group by th.PRCo, th.Employee, year(th.PREndDate), month(th.PREndDate)
+)
+
+-- =============================================
+-- Main query to retrieve employee info and monthly hours
+-- =============================================
+
+select 
+	rm.HRCo,        
+	rm.HRRef,       
+	p.Employee as EmployeeID, 
+	rm.LastName,
+	rm.FirstName,
+	case ec.Method 
+	when 'A' then 'Salary' 
+	when 'H' then 'Hourly' 
+	end as HourlyOrSalary,
+	eh.ActiveYN,    
+	eh.HireDate,    
+	eh.TermDate,
+-- Summarizing total hours per month for the entered year --
+	coalesce(sum(case when p.PayrollMonth = 1 then p.TotalHours else 0 end), 0) as January,
+	coalesce(sum(case when p.PayrollMonth = 2 then p.TotalHours else 0 end), 0) as February, 
+	coalesce(sum(case when p.PayrollMonth = 3 then p.TotalHours else 0 end), 0) as March, 
+	coalesce(sum(case when p.PayrollMonth = 4 then p.TotalHours else 0 end), 0) as April, 
+	coalesce(sum(case when p.PayrollMonth = 5 then p.TotalHours else 0 end), 0) as May, 
+	coalesce(sum(case when p.PayrollMonth = 6 then p.TotalHours else 0 end), 0) as June, 
+	coalesce(sum(case when p.PayrollMonth = 7 then p.TotalHours else 0 end), 0) as July, 
+	coalesce(sum(case when p.PayrollMonth = 8 then p.TotalHours else 0 end), 0) as August, 
+	coalesce(sum(case when p.PayrollMonth = 9 then p.TotalHours else 0 end), 0) as September, 
+	coalesce(sum(case when p.PayrollMonth = 10 then p.TotalHours else 0 end), 0) as October, 
+	coalesce(sum(case when p.PayrollMonth = 11 then p.TotalHours else 0 end), 0) as November, 
+	coalesce(sum(case when p.PayrollMonth = 12 then p.TotalHours else 0 end), 0) as December,
+	round(cast(sum(p.TotalHours) / 12.0 as decimal(10,2)), 2) as MonthlyAverage,
+	sum(p.TotalHours) as YearlyTotal
+from CTEEmployeePayroll p
+	left join HRResourceMaster rm on rm.HRCo = p.PRCo and rm.HRRef = p.Employee
+	left join PayrollEmployeeHeader eh on eh.PRCo = rm.HRCo and eh.Employee = rm.HRRef
+	left join PayrollEarnCode ec on PRCo = rm.HRCo and EarnCode = rm.EarnCode 
+where rm.HRCo = @HRCo 
+group by 
+	rm.HRCo,
+	rm.HRRef,
+	p.Employee,
+	rm.LastName,
+	rm.FirstName,
+	ec.Method,
+	eh.ActiveYN,
+	eh.HireDate,
+	eh.TermDate
+order by p.Employee
+end
