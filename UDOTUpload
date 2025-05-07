@@ -1,0 +1,356 @@
+
+-- ===============================================================
+-- Author:		Dreyson Smith
+-- Create date: 4/15/2025
+-- Description:	Report made to go into UDOT for Payroll eComply
+
+--Updates: DWS 5/5/25 - Converting unspecific classes to the general labor class, filtering out all 7## classes (only labor jobs are uploaded to UDOT)
+-- ===============================================================
+ALTER PROCEDURE UDOT_Import
+	-- Add the parameters for the stored procedure here
+	 @CO bCompany,
+	 @Job bJob,
+	 @PREdate smalldatetime
+AS
+BEGIN
+	-- SET NOCOUNT ON added to prevent extra result sets from
+	-- interfering with SELECT statements.
+	SET NOCOUNT ON;
+
+	
+if object_id('tempdb..#PRRever') is not null drop table #PRRever
+if object_id('tempdb..#EmployeeHeader') is not null drop table #EmployeeHeader
+if object_id('tempdb..#OtherDeductions') is not null drop table #OtherDeductions
+if object_id('tempdb..#PRHours') is not null drop table #PRHours
+if object_id('tempdb..#SummaryByEmployee') is not null drop table #SummaryByEmployee
+if object_id('tempdb..#FinalSummary') is not null drop table #FinalSummary
+if object_id('tempdb..#PayrollSequence') is not null drop table #PayrollSequence
+
+-- base payroll data
+select
+    PRCo,
+    PREndDate,
+    Job,
+    Class,
+    PaySeq,
+    Employee,
+    FICA,
+    Med,
+    FedTax,
+    StateTax,
+    GrossEarnings,
+    DedCode,
+    Amount,
+    EarnCode,
+    PostDate,
+    Hours
+into #PRRever
+from PayrollTable
+where PRCo = @CO 
+  and PREndDate = @PREdate 
+  and Job = @Job 
+  and LiabCode is null 
+  and isnumeric(Class) = 1 
+  and PaySeq = 1
+
+-- employee info
+select distinct 
+    p.PRCo, p.Employee, p.FirstName, p.LastName, p.SSN, 
+    p.Sex, p.Address, p.Address2, p.City, p.State, 
+    p.Zip, p.Class, p.HrlyRate
+into #EmployeeHeader
+from EmployeeInfo p
+join #PRRever r on r.Employee = p.Employee
+where p.PRCo = @CO
+
+-- other deductions
+select 
+    Employee,
+    sum(isnull(Amount, 0)) as other_deductions
+into #OtherDeductions
+from #PRRever
+where DedCode not in (1001,1004,1007,1011,1061,1021,1041,1051,1071)
+group by Employee
+
+-- pre-aggregated hours
+select
+    Employee,
+--regular time
+    sum(case when EarnCode = 1 and datepart(weekday, PostDate) = 1 then Hours else 0 end) as rt1,
+    sum(case when EarnCode = 1 and datepart(weekday, PostDate) = 2 then Hours else 0 end) as rt2,
+    sum(case when EarnCode = 1 and datepart(weekday, PostDate) = 3 then Hours else 0 end) as rt3,
+    sum(case when EarnCode = 1 and datepart(weekday, PostDate) = 4 then Hours else 0 end) as rt4,
+    sum(case when EarnCode = 1 and datepart(weekday, PostDate) = 5 then Hours else 0 end) as rt5,
+    sum(case when EarnCode = 1 and datepart(weekday, PostDate) = 6 then Hours else 0 end) as rt6,
+    sum(case when EarnCode = 1 and datepart(weekday, PostDate) = 7 then Hours else 0 end) as rt7,
+
+--overtime
+    sum(case when EarnCode = 2 and datepart(weekday, PostDate) = 1 then Hours else 0 end) as ot1,
+    sum(case when EarnCode = 2 and datepart(weekday, PostDate) = 2 then Hours else 0 end) as ot2,
+    sum(case when EarnCode = 2 and datepart(weekday, PostDate) = 3 then Hours else 0 end) as ot3,
+    sum(case when EarnCode = 2 and datepart(weekday, PostDate) = 4 then Hours else 0 end) as ot4,
+    sum(case when EarnCode = 2 and datepart(weekday, PostDate) = 5 then Hours else 0 end) as ot5,
+    sum(case when EarnCode = 2 and datepart(weekday, PostDate) = 6 then Hours else 0 end) as ot6,
+    sum(case when EarnCode = 2 and datepart(weekday, PostDate) = 7 then Hours else 0 end) as ot7
+into #PRHours
+from #PRRever
+group by Employee
+
+-- pre-aggregated earnings/deductions
+select
+    Employee,
+    sum(isnull(FICA, 0) + isnull(Med, 0)) as fica,
+    sum(isnull(FedTax, 0)) as fedWH,
+    sum(isnull(StateTax, 0)) as stWH,
+    sum(isnull(GrossEarnings, 0)) as grossPayAllProjects,
+    sum(case when Job = @Job then isnull(GrossEarnings, 0) else 0 end) as grossPayThisProject
+into #SummaryByEmployee
+from #PRRever
+group by Employee
+
+-- PRSQ for check/DD information
+select 
+    th.PRCo,
+    th.PRGroup,
+    th.PREndDate,
+    th.Employee,
+    th.PaySeq,
+sq.PayMethod,
+    sq.CMRef
+into #PayrollSequence
+from PayrollHeader th
+join PaySequence sq
+on th.PRCo = sq.PRCo 
+ and th.PRGroup = sq.PRGroup 
+ and th.PREndDate = sq.PREndDate 
+ and th.Employee = sq.Employee 
+ and th.PaySeq = sq.PaySeq
+where th.PRCo = @CO
+and th.PREndDate = @PREdate
+and th.Job = @Job
+
+-- final table creation
+create table #FinalSummary (
+payRollNumber varchar(25),
+weekEndDate varchar(10),
+assignedEmpID varchar(25),
+titleCourtesy varchar(25),
+firstName varchar(25),
+middleInitial varchar(25),
+lastName varchar(25),
+suffix varchar(25),
+title varchar(25),
+birthdate varchar(25),
+ssn varchar(12),
+maritalStatus varchar(1),
+exemption numeric(10,0),
+ethnicity int,
+gender varchar(1),
+address varchar(75),
+city varchar(25),
+state varchar(15),
+zip varchar(12),
+country varchar(30),
+contactNo varchar(25),
+officeNo varchar(25),
+unionName varchar(25),
+hireDate varchar(25),
+federalID varchar(25),
+alienNo varchar(25),
+apprenticeshipNo varchar(25),
+fica numeric(8,2),
+fedWH numeric(8,2),
+stWH numeric(8,2),
+grossPayAllProjects numeric(10,2),
+netPay numeric(10,2),
+checkNumber varchar(25),
+otherDeduction1 varchar(25),
+value1 varchar(25),
+otherDeduction2 varchar(25),
+value2 varchar(25),
+otherDeduction3 varchar(25),
+value3 varchar(25),
+classification varchar(15),
+trade char(10),
+grossPayThisProject numeric(10,2),
+otherProjectsRTHrs varchar(25),
+otherProjectsOTHrs varchar(25),
+benefitsPaidToUnion varchar(25),
+benefitsPaidToEmployee varchar(25),
+benefitsPaidToOther varchar(25),
+benefitsPaidTo1 varchar(25),
+benefitsPaidTo2 varchar(25),
+benefitsPaidTo3 varchar(25),
+isFridayMakeUpDay varchar(25),
+isSaturdayMakeUpDay varchar(25),
+isSundayMakeUpDay varchar(25),
+rt1 numeric(5,2), rt2 numeric(5,2), rt3 numeric(5,2), rt4 numeric(5,2),
+rt5 numeric(5,2), rt6 numeric(5,2), rt7 numeric(5,2),
+rtRate numeric(8,2),
+rtBenefit varchar(25),
+st1 varchar(25), st2 varchar(25), st3 varchar(25), st4 varchar(25),
+st5 varchar(25), st6 varchar(25), st7 varchar(25),
+stRate varchar(25),
+stBenefit varchar(25),
+ot1 numeric(5,2), ot2 numeric(5,2), ot3 numeric(5,2), ot4 numeric(5,2),
+ot5 numeric(5,2), ot6 numeric(5,2), ot7 numeric(5,2),
+otRate varchar(25),
+otBenefit varchar(25),
+gt1 varchar(25), gt2 varchar(25), gt3 varchar(25), gt4 varchar(25),
+gt5 varchar(25), gt6 varchar(25), gt7 varchar(25),
+gtRate varchar(25),
+gtBenefit varchar(25),
+dt1 varchar(25), dt2 varchar(25), dt3 varchar(25), dt4 varchar(25),
+dt5 varchar(25), dt6 varchar(25), dt7 varchar(25),
+dtRate varchar(25),
+dtBenefit varchar(25),
+tt1 varchar(25), tt2 varchar(25), tt3 varchar(25), tt4 varchar(25),
+tt5 varchar(25), tt6 varchar(25), tt7 varchar(25),
+ttRate varchar(25),
+ttBenefit varchar(25),
+ph1 varchar(25), ph2 varchar(25), ph3 varchar(25), ph4 varchar(25),
+ph5 varchar(25), ph6 varchar(25), ph7 varchar(25),
+contractno varchar(25),
+schoolcode varchar(25),
+taxpayerid varchar(25),
+SDI numeric(8,0),
+Etax numeric(8,0),
+otherDeduction4 varchar(25),
+value4 varchar(25),
+otherDeduction5 varchar(25),
+value5 varchar(25),
+OtherPayment1 varchar(25),
+OtherPaymentAmount1 varchar(25),
+NotInGrossPay1 varchar(25),
+OtherPayment2 varchar(25),
+OtherPaymentAmount2 varchar(25),
+NotInGrossPay2 varchar(25),
+OtherPayment3 varchar(25),
+OtherPaymentAmount3 varchar(25),
+NotInGrossPay3 varchar(25)
+)
+
+-- final insert
+insert into #FinalSummary
+select
+'' as payRollNumber,
+    convert(varchar(10), @PREdate, 101) as weekEndDate,
+    '' as assignedEmpID,
+    '' as titleCourtesy,
+    p.FirstName,
+    '' as middleInitial,
+    p.LastName,
+    '' as suffix,
+    '' as title,
+    '' as birthdate,
+    replace(p.SSN, '-', '') as ssn,
+    isnull(h.MaritalStatus, 'S') as maritalStatus,
+    0 as exemption,
+    case 
+        when h.Race = 'W' then 1
+        when h.Race = 'B' then 2
+        when h.Race = 'H' then 3
+        when h.Race = 'I' then 4
+        when h.Race in ('A','P') then 5
+        when h.Race in ('M','O','T','U') then 6
+        else null
+    end as ethnicity,
+    p.Sex as gender,
+    isnull(p.Address, '') + ' ' + isnull(p.Address2, '') as address,
+    p.City,
+    p.State,
+    case when left(p.Zip, 1) = '0' then '''' + p.Zip else p.Zip end as zip,
+    'United States' as country,
+    '' as contactNo,
+    '' as officeNo,
+    '' as unionName,
+    '' as hireDate,
+    '' as federalID,
+    '' as alienNo,
+    '' as apprenticeshipNo,
+    s.fica,
+    s.fedWH,
+    s.stWH,
+    s.grossPayAllProjects,
+    s.grossPayThisProject - s.fica - s.fedWH - s.stWH - isnull(d.other_deductions, 0) as netPay,
+    case 
+        when sq.PayMethod in ('E', 'X') then 'DD'
+        when sq.PayMethod = 'C' then ltrim(sq.CMRef)
+        else null 
+    end as checkNumber,
+    '' as otherDeduction1,
+    '' as value1,
+    '' as otherDeduction2,
+    '' as value2,
+    '' as otherDeduction3,
+    '' as value3,
+    case
+		when p.Class in ('100', 'FIELD') then '401' --5/5/25
+		else p.Class
+    end,
+    'JOURNEYMAN' as trade,
+    s.grossPayThisProject,
+    '' as otherProjectsRTHrs,
+    '' as otherProjectsOTHrs,
+    '' as benefitsPaidToUnion,
+    '' as benefitsPaidToEmployee,
+    '' as benefitsPaidToOther,
+    '' as benefitsPaidTo1,
+    '' as benefitsPaidTo2,
+    '' as benefitsPaidTo3,
+    '' as isFridayMakeUpDay,
+    '' as isSaturdayMakeUpDay,
+    '' as isSundayMakeUpDay,
+    hr.rt1, hr.rt2, hr.rt3, hr.rt4, hr.rt5, hr.rt6, hr.rt7,
+    p.HrlyRate as rtRate,
+    '' as rtBenefit,
+    '' as st1, '' as st2, '' as st3, '' as st4, '' as st5, '' as st6, '' as st7,
+    '' as stRate,
+    '' as stBenefit,
+    hr.ot1, hr.ot2, hr.ot3, hr.ot4, hr.ot5, hr.ot6, hr.ot7,
+    '' as otRate,
+    '' as otBenefit,
+    '' as gt1, '' as gt2, '' as gt3, '' as gt4, '' as gt5, '' as gt6, '' as gt7,
+    '' as gtRate,
+    '' as gtBenefit,
+    '' as dt1, '' as dt2, '' as dt3, '' as dt4, '' as dt5, '' as dt6, '' as dt7,
+    '' as dtRate,
+    '' as dtBenefit,
+    '' as tt1, '' as tt2, '' as tt3, '' as tt4, '' as tt5, '' as tt6, '' as tt7,
+    '' as ttRate,
+    '' as ttBenefit,
+    '' as ph1, '' as ph2, '' as ph3, '' as ph4, '' as ph5, '' as ph6, '' as ph7,
+    '' as contractno,
+    '' as schoolcode,
+    '' as taxpayerid,
+    0 as SDI,
+    0 as Etax,
+    '' as otherDeduction4,
+    '' as value4,
+    '' as otherDeduction5,
+    '' as value5,
+    '' as OtherPayment1,
+    '' as OtherPaymentAmount1,
+    '' as NotInGrossPay1,
+    '' as OtherPayment2,
+    '' as OtherPaymentAmount2,
+    '' as NotInGrossPay2,
+    '' as OtherPayment3,
+    '' as OtherPaymentAmount3,
+    '' as NotInGrossPay3
+from #EmployeeHeader p
+left join ResourceMaster h on p.PRCo = h.PRCo and p.SSN = h.SSN
+left join #SummaryByEmployee s on s.Employee = p.Employee
+left join #PRHours hr on hr.Employee = p.Employee
+left join #OtherDeductions d on d.Employee = p.Employee
+left join #PayrollSequence sq on sq.PRCo = p.PRCo and sq.Employee = p.Employee and sq.PREndDate = @PREdate
+
+-- final result
+select distinct * from #FinalSummary 
+where classification not like '7%' --5/5/25
+order by lastName
+	
+END
+
+ 
+
