@@ -1,0 +1,135 @@
+-- ==========================================================================================================
+-- Author:  Noreen Herren
+-- Create date: 1/12/2023
+-- Description: Pulls reviewer information from both the AccountsPayableUnapprovedReviewer (reviewer) and AccountsPayableTableHeader (paid transactions) tables
+
+--Updates:	--4/25/25 DWS - Changed left outer join to left hash join for AccountsPayableTableHeader to AccountsPayableTableLines for performance issues, added another AccountsPayableUnapprovedReviewer join looking at current approver to previous approver in order to create NewDateAssigned, and adding DaysAssigned
+			--5/2/25 DWS - Adding HeadquartersMasterAudit table to look at records for Unapproved Reviewers on when they are first assigned an invoice and when it was reassigned (without being approved)
+-- ==========================================================================================================
+ALTER PROCEDURE AppInvAssignedApprvd
+
+@APCo INT,
+@BegMth as DATE,
+@EndMth as DATE
+
+
+AS
+BEGIN
+-- SET NOCOUNT ON added to prevent extra result sets from
+-- interfering with SELECT statements.
+SET NOCOUNT ON;
+
+if object_id('tempdb..#invoices') is not null 
+    drop table #invoices
+
+select  APCo, APRef, Vendor, UISeq 'UISeq', Line 'APLine', VendorGroup, DueDate, InvDate,  GrossAmt, 
+ MiscAmt, TaxAmt, MiscYN, TaxType, UIMth 'UIMth', UniqueAttchID
+into #invoices
+from AccountsPayableUnapprovedInvoice LEFT OUTER JOIN AccountsPayableUnapprovedLines ON APCo=APCo AND UIMth=UIMth AND  UISeq=UISeq
+where 
+ APCo = @APCo and
+(UIMth >= iif(@BegMth IS NULL or @BegMth = '', '1/1/1925', @BegMth) and
+UIMth <= iif(@EndMth IS NULL  or @EndMth = '', '12/1/2025', @EndMth))
+
+UNION ALL
+
+select APCo, APRef, Vendor, udUISeq as 'UISeq', APLine, VendorGroup, DueDate, InvDate, GrossAmt, MiscAmt, TaxAmt, MiscYN, TaxType, udUIMth as 'UIMth', UniqueAttchID 
+from AccountsPayableTableHeader
+
+--4/25/25
+left hash join AccountsPayableTableLines
+    on APCo = APCo and Mth = Mth and APTrans = APTrans
+where APCo = @APCo 
+  and (@BegMth IS NULL OR @BegMth = '' OR udUIMth >= @BegMth)
+  and (@EndMth IS NULL OR @EndMth = '' OR udUIMth <= @EndMth)
+--4/25/25
+
+select Name 'ReviewerName', APRef, Vendor, APCo, UISeq, APLine, HQCo, Name 'HQCoName', DueDate, InvDate, 
+Name 'VendorName', GrossAmt, udCoNameAbbrev, MiscAmt, TaxAmt, MiscYN, TaxType, UIMth,  APCo, UIMth, ApprvdYN, Reviewer, Rejected, DateAssigned, isnull(p.DateApproved, DateAssigned) as NewDateAssigned, DateApproved, datediff(day, isnull(p.DateApproved, DateAssigned), DateApproved) as DaysAssigned, Line, ApprovalSeq, ApprvdYN, UniqueAttchID
+from #invoices I 
+INNER JOIN CompanyNames ON APCo = HQCo 
+LEFT OUTER JOIN AccountsPayableVendorMaster ON VendorGroup = VendorGroup AND Vendor = Vendor 
+LEFT OUTER JOIN AccountsPayableUnapprovedReviewer ON APCo = APCo AND UIMth = UIMth AND UISeq = UISeq AND APLine = Line 
+LEFT OUTER JOIN ReviewerNames ON Reviewer = Reviewer
+
+--4/25/25
+left join (
+    select UISeq, UIMth, APCo, Line, ApprovalSeq, DateApproved
+    from AccountsPayableUnapprovedReviewer
+    where ApprvdYN = 'Y'
+) p 
+    on p.UISeq = UISeq 
+    and p.UIMth = UIMth 
+    and p.APCo = APCo
+    and p.Line = Line
+    and p.ApprovalSeq = ApprovalSeq - 1
+--4/25/25
+
+
+--5/2/25
+--TABLE LOOKING AT TIME BETWEEN INVOICES BEFORE REASSIGNED
+
+	if object_id('tempdb..#hqma') is not null 
+    drop table #hqma;
+
+with FirstA as (
+select 
+    a.Co,
+    a.KeyString,
+    a.TableName,
+    a.RecType,
+    a.DateTime,
+    a.UserName,
+    a.KeyString as KeystringA,
+    right(a.KeyString, len(a.KeyString) - charindex('Reviewer:', a.KeyString) - 9) as Reviewer,
+    row_number() over (partition by a.Co, a.KeyString, a.TableName order by a.DateTime asc) as rn
+from MasterAudit a
+where 
+    a.RecType = 'A'
+    and a.Co = @APCo
+    and a.TableName = 'bAPUR'
+    and a.KeyString like '%Header Reviewer:%'
+    and a.DateTime between isnull(@BegMth, '1950/01/01') and isnull(@EndMth, '2050/12/01')
+),
+
+LastD as (
+select 
+    d.Co,
+    d.KeyString,
+    d.TableName,
+    d.RecType,
+    d.DateTime,
+    d.UserName,
+    row_number() over (partition by d.Co, d.KeyString, d.TableName order by d.DateTime desc) as rn
+from MasterAudit d
+where 
+    d.RecType = 'D'
+    and d.Co = @APCo
+    and d.TableName = 'UnapproveredReviewer'
+    and d.KeyString like '%Header Reviewer:%'
+    and d.DateTime between isnull(@BegMth, '1950/01/01') and isnull(@EndMth, '2050/12/01')
+)
+
+select 
+    datediff(day, a.DateTime, d.DateTime) as DaysAssigned,
+    a.Co as CoA,
+    a.Reviewer,
+    a.KeystringA,
+
+    a.RecType as RecTypeA,
+    a.DateTime as DateTimeA,
+    a.UserName as UserNameA,
+    
+    d.RecType as RecTypeD,
+    d.DateTime as DateTimeD,
+    d.UserName as UserNameD
+from FirstA a
+join LastD d
+    on a.KeyString = d.KeyString
+    and a.Co = d.Co
+    and a.TableName = d.TableName
+where 
+    a.rn = 1 and d.rn = 1
+--5/2/25
+
+END
