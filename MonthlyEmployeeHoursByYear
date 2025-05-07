@@ -1,0 +1,37 @@
+modify procedure zSTRL_PR_MonthlyEmployeeHoursByYear
+
+@Company int
+@Year int
+
+as
+begin
+
+select PRCo, Employee as EmployeeID, LastName, FirstName,
+	case 
+		when SalaryAmt > 0 then 'Salary'
+		when SalaryAmt = 0 then 'Hourly'
+	end as HourlyOrSalary,
+		ActiveYN, 
+		FORMAT(HireDate, 'MM/dd/yyyy') as HireDate,
+		FORMAT(TermDate, 'MM/dd/yyyy') as TermDate,
+		SUM(CASE WHEN MONTH(PREndDate) = 1 THEN Hours ELSE 0 END) AS January,
+		SUM(CASE WHEN MONTH(PREndDate) = 2 THEN Hours ELSE 0 END) AS February, 
+		SUM(CASE WHEN MONTH(PREndDate) = 3 THEN Hours ELSE 0 END) AS March, 
+		SUM(CASE WHEN MONTH(PREndDate) = 4 THEN Hours ELSE 0 END) AS April, 
+		SUM(CASE WHEN MONTH(PREndDate) = 5 THEN Hours ELSE 0 END) AS May, 
+		SUM(CASE WHEN MONTH(PREndDate) = 6 THEN Hours ELSE 0 END) AS June, 
+		SUM(CASE WHEN MONTH(PREndDate) = 7 THEN Hours ELSE 0 END) AS July, 
+		SUM(CASE WHEN MONTH(PREndDate) = 8 THEN Hours ELSE 0 END) AS August, 
+		SUM(CASE WHEN MONTH(PREndDate) = 9 THEN Hours ELSE 0 END) AS September, 
+		SUM(CASE WHEN MONTH(PREndDate) = 10 THEN Hours ELSE 0 END) AS October, 
+		SUM(CASE WHEN MONTH(PREndDate) = 11 THEN Hours ELSE 0 END) AS November, 
+		SUM(CASE WHEN MONTH(PREndDate) = 12 THEN Hours ELSE 0 END) AS December,
+		SUM(Hours) AS TotalHours
+from PayrollTableHeader
+	join PayrollEmployeeInfo on PRCo = PRCo and Employee = Employee
+where PRCo = @Company
+	and year(PREndDate) = @Year
+Group by PRCo, Employee, LastName, FirstName, SalaryAmt, ActiveYN, HireDate, TermDate
+order by LastName, FirstName
+
+end
